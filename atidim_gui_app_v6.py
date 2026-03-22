@@ -329,6 +329,7 @@ Requires: Python Editor Script Plugin + Editor Scripting Utilities Plugin
 
 Features
 --------
+- Opens a PySide2 dialog with a log box so you can see progress.
 - Auto-detects CesiumGeoreference actor -> uses lon/lat transform for
   pixel-accurate geo-registration on the Cesium globe.
 - Falls back to scale-based positioning when Cesium is not present.
@@ -336,14 +337,21 @@ Features
 - Skips actors that already exist in the level (preserves your edits).
 """
 
-import json, math, os, sys, unreal
+import json, os, sys, unreal
 
-# ── Defaults written by AtidimGui (editable below) ───────────────
-_DEFAULT_JSON      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "{{json_name}}")
-_DEFAULT_BP        = "{{blueprint_path}}"
-_DEFAULT_SCALE     = {{scale}}
+# ── Defaults written by AtidimGui (editable below) ────────────────
+try:
+    _DEFAULT_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "{{json_name}}")
+except NameError:
+    _DEFAULT_JSON = "{{json_name}}"
+_DEFAULT_BP    = "{{blueprint_path}}"
+_DEFAULT_SCALE = {{scale}}
 # ──────────────────────────────────────────────────────────────────
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  IMPORT LOGIC
+# ═══════════════════════════════════════════════════════════════════
 
 def _find_cesium_georeference():
     try:
@@ -370,7 +378,7 @@ def _make_coord_converter(georeference, ref_x, ref_y, scale, is_geographic, log_
     else:
         if georeference is not None and not is_geographic:
             log_fn("WARNING: Cesium Georeference found but data CRS is projected (not lat/lon).")
-            log_fn("         Re-export with EPSG:4326 target to use Cesium geo-transform.")
+            log_fn("         Re-export with EPSG:4326 to use the Cesium geo-transform.")
         elif is_geographic:
             log_fn("No Cesium Georeference in level - using scale-based positioning.")
         def _scale(x, y, z):
@@ -388,8 +396,8 @@ def run_import(json_file, blueprint_path, scale, log_fn):
         log_fn("ERROR loading JSON: {}".format(e))
         return
 
-    polygons     = raw.get("polygons", [])
-    file_crs     = raw.get("crs", "unknown")
+    polygons      = raw.get("polygons", [])
+    file_crs      = raw.get("crs", "unknown")
     is_geographic = raw.get("coord_type", "geographic") == "geographic"
     log_fn("JSON loaded  CRS: {}  polygons: {}".format(file_crs, len(polygons)))
 
@@ -404,7 +412,7 @@ def run_import(json_file, blueprint_path, scale, log_fn):
     bp_class = unreal.EditorAssetLibrary.load_blueprint_class(blueprint_path)
     if bp_class is None:
         log_fn("ERROR: Could not load Blueprint '{}'".format(blueprint_path))
-        log_fn("Check the Content Browser path (e.g. /Game/Blueprints/BP_MySpline).")
+        log_fn("Check the Content Browser path, e.g. /Game/Blueprints/BP_MySpline")
         return
     log_fn("Blueprint loaded: {}".format(blueprint_path))
 
@@ -440,7 +448,7 @@ def run_import(json_file, blueprint_path, scale, log_fn):
                 continue
 
             if actor is None:
-                log_fn("  ERROR: spawn_actor_from_class returned None for {}".format(label))
+                log_fn("  ERROR: spawn returned None for {}".format(label))
                 errors += 1
                 continue
 
@@ -472,18 +480,130 @@ def run_import(json_file, blueprint_path, scale, log_fn):
                 except Exception as exc:
                     log_fn("  WARNING construction script failed: {}".format(exc))
 
-    log_fn("Done.  Created: {}  Skipped: {}  Errors: {}".format(created, skipped, errors))
+    log_fn("")
+    log_fn("── Summary ──────────────────────────────────────")
+    log_fn("  Created : {}".format(created))
+    log_fn("  Skipped : {}  (already existed)".format(skipped))
+    log_fn("  Errors  : {}".format(errors))
+    if skipped:
+        log_fn("  Tip: delete Polygon_* actors you want to reimport, then run again.")
+    unreal.log("AtidimGui polygon splines: created={} skipped={} errors={}".format(
+        created, skipped, errors))
 
 
-# ── Entry point ────────────────────────────────────────────────────
-def _log(msg):
-    print(msg)
-    try:
-        unreal.log(msg)
-    except Exception:
-        pass
+# ═══════════════════════════════════════════════════════════════════
+#  GUI  (PySide2 — bundled with Unreal Engine 5)
+# ═══════════════════════════════════════════════════════════════════
 
-run_import(_DEFAULT_JSON, _DEFAULT_BP, _DEFAULT_SCALE, _log)
+try:
+    from PySide2 import QtWidgets, QtCore, QtGui
+except ImportError:
+    unreal.log_warning("PySide2 not available - running headless with default settings.")
+    run_import(_DEFAULT_JSON, _DEFAULT_BP, _DEFAULT_SCALE,
+               lambda m: unreal.log(m))
+    raise SystemExit
+
+
+class ImportDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("AtidimGui — Polygon Spline Import")
+        self.setMinimumWidth(560)
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(14, 14, 14, 14)
+
+        # ── JSON file ──────────────────────────────────────────────
+        grp_file = QtWidgets.QGroupBox("Data File")
+        fl = QtWidgets.QHBoxLayout(grp_file)
+        self.json_edit = QtWidgets.QLineEdit(_DEFAULT_JSON)
+        browse_btn = QtWidgets.QPushButton("Browse...")
+        browse_btn.setFixedWidth(80)
+        browse_btn.clicked.connect(self._browse_json)
+        fl.addWidget(self.json_edit)
+        fl.addWidget(browse_btn)
+        root.addWidget(grp_file)
+
+        # ── Blueprint ──────────────────────────────────────────────
+        grp_bp = QtWidgets.QGroupBox("Unreal Blueprint")
+        bl = QtWidgets.QFormLayout(grp_bp)
+        self.bp_edit = QtWidgets.QLineEdit(_DEFAULT_BP)
+        self.bp_edit.setPlaceholderText("/Game/Blueprints/BP_PolygonSpline")
+        bl.addRow("Content path:", self.bp_edit)
+        root.addWidget(grp_bp)
+
+        # ── Scale ──────────────────────────────────────────────────
+        grp_opts = QtWidgets.QGroupBox("Import Options")
+        ol = QtWidgets.QFormLayout(grp_opts)
+        ol.setSpacing(8)
+        self.scale_spin = QtWidgets.QDoubleSpinBox()
+        self.scale_spin.setRange(0.001, 1e9)
+        self.scale_spin.setDecimals(1)
+        self.scale_spin.setSingleStep(1000)
+        self.scale_spin.setValue(_DEFAULT_SCALE)
+        self.scale_spin.setToolTip(
+            "1 degree lat/lon ~ 11 100 000 cm\\n"
+            "1 metre = 100 cm\\n"
+            "Increase if polygons look tiny; decrease if they are huge.")
+        ol.addRow("Scale (GIS unit -> Unreal cm):", self.scale_spin)
+        root.addWidget(grp_opts)
+
+        # ── Log ────────────────────────────────────────────────────
+        grp_log = QtWidgets.QGroupBox("Log")
+        ll = QtWidgets.QVBoxLayout(grp_log)
+        self.log_box = QtWidgets.QPlainTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setFixedHeight(180)
+        self.log_box.setFont(QtGui.QFont("Consolas", 9))
+        ll.addWidget(self.log_box)
+        root.addWidget(grp_log)
+
+        # ── Buttons ────────────────────────────────────────────────
+        btn_row = QtWidgets.QHBoxLayout()
+        self.import_btn = QtWidgets.QPushButton("Import")
+        self.import_btn.setDefault(True)
+        self.import_btn.setFixedHeight(32)
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.setFixedHeight(32)
+        self.import_btn.clicked.connect(self._do_import)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self.import_btn)
+        btn_row.addWidget(close_btn)
+        root.addLayout(btn_row)
+
+    def _browse_json(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select polygon splines JSON", self.json_edit.text(),
+            "JSON files (*.json);;All files (*.*)")
+        if path:
+            self.json_edit.setText(path)
+
+    def _log(self, msg):
+        self.log_box.appendPlainText(msg)
+        QtWidgets.QApplication.processEvents()
+
+    def _do_import(self):
+        self.import_btn.setEnabled(False)
+        self.log_box.clear()
+        self._log("Starting import...")
+        try:
+            run_import(
+                json_file      = self.json_edit.text().strip(),
+                blueprint_path = self.bp_edit.text().strip(),
+                scale          = self.scale_spin.value(),
+                log_fn         = self._log,
+            )
+        except Exception as exc:
+            self._log("EXCEPTION: {}".format(exc))
+        finally:
+            self.import_btn.setEnabled(True)
+
+
+app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+dlg = ImportDialog()
+dlg.exec_()
 '''
 
 
