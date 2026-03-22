@@ -345,7 +345,7 @@ try:
 except NameError:
     _DEFAULT_JSON = "{{json_name}}"
 _DEFAULT_BP    = "{{blueprint_path}}"
-_DEFAULT_SCALE = {{scale}}
+_DEFAULT_SCALE = {{scale}}   # cm per metre — 100 = real-world scale
 # ──────────────────────────────────────────────────────────────────
 
 
@@ -378,14 +378,27 @@ def _make_coord_converter(georeference, ref_x, ref_y, scale, is_geographic, log_
     else:
         if georeference is not None and not is_geographic:
             log_fn("WARNING: Cesium Georeference found but data CRS is projected (not lat/lon).")
-            log_fn("         Re-export with EPSG:4326 to use the Cesium geo-transform.")
-        elif is_geographic:
-            log_fn("No Cesium Georeference in level - using scale-based positioning.")
-        def _scale(x, y, z):
-            return unreal.Vector((x - ref_x) * scale,
-                                 (y - ref_y) * scale,
-                                 z * scale)
-        return _scale
+        if is_geographic:
+            import math
+            lat_rad = math.radians(ref_y)
+            m_per_lat = 111320.0
+            m_per_lon = 111320.0 * math.cos(lat_rad)
+            log_fn("No Cesium Georeference - flat-earth geo conversion.")
+            log_fn("  m/lon-deg={:.1f}  m/lat-deg={:.1f}  scale(cm/m)={}".format(
+                m_per_lon, m_per_lat, scale))
+            def _geo(x, y, z):
+                return unreal.Vector(
+                    (x - ref_x) * m_per_lon * scale,
+                    (y - ref_y) * m_per_lat * scale,
+                    z * scale)
+            return _geo
+        else:
+            log_fn("Projected CRS - scale(cm/m)={}".format(scale))
+            def _proj(x, y, z):
+                return unreal.Vector((x - ref_x) * scale,
+                                     (y - ref_y) * scale,
+                                     z * scale)
+            return _proj
 
 
 def _load_blueprint_class(blueprint_path, log_fn):
@@ -1124,7 +1137,7 @@ class App(tk.Tk):
         self.curves_input = tk.StringVar()
         self.curves_output_dir = tk.StringVar()
         self.curves_bp_path = tk.StringVar(value="/Game/BP_PolygonSpline")
-        self.curves_scale = tk.StringVar(value="100.0")
+        self.curves_scale = tk.StringVar(value="100.0")  # cm per metre
         self.curves_refinements = tk.IntVar(value=3)
         self.curves_simplify = tk.StringVar(value="0.0")
         self.curves_src_epsg = tk.StringVar(value="4326")
