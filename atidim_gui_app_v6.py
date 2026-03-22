@@ -518,6 +518,11 @@ def run_import(json_file, blueprint_path, scale, log_fn):
             spline.clear_spline_points(True)
             for x, y, z in pts:
                 spline.add_spline_world_point(to_ue(x, y, z))
+            # Set every point to Linear so Unreal does NOT add extra
+            # smoothing between points (preserves sharp polygon corners)
+            n_pts = spline.get_number_of_spline_points()
+            for idx in range(n_pts):
+                spline.set_spline_point_type(idx, unreal.SplinePointType.LINEAR, False)
             spline.set_closed_loop(True)
             spline.update_spline()
 
