@@ -1,0 +1,13 @@
+# Build artifacts
+build/
+dist/
+*.pyc
+__pycache__/
+*.spec.bak
+
+# Archives / output files
+archive/
+*.obj
+*.mtl
+*.zip
+*.exe
