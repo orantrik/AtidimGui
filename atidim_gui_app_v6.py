@@ -388,6 +388,46 @@ def _make_coord_converter(georeference, ref_x, ref_y, scale, is_geographic, log_
         return _scale
 
 
+def _load_blueprint_class(blueprint_path, log_fn):
+    """
+    Try to load a blueprint class by path.
+    If the exact path fails, search the Asset Registry for a blueprint
+    whose name matches the last component of the given path.
+    Returns (bp_class, resolved_path) or (None, None).
+    """
+    # 1. Try exact path
+    bp_class = unreal.EditorAssetLibrary.load_blueprint_class(blueprint_path)
+    if bp_class is not None:
+        return bp_class, blueprint_path
+
+    log_fn("Exact path '{}' not found - searching asset registry...".format(blueprint_path))
+    bp_name = blueprint_path.rstrip("/").split("/")[-1]
+
+    # 2. Search asset registry for any Blueprint with this name
+    try:
+        ar = unreal.AssetRegistryHelpers.get_asset_registry()
+        filter_ = unreal.ARFilter(
+            class_names=["Blueprint"],
+            recursive_classes=True,
+            recursive_paths=True,
+            package_paths=["/Game"],
+        )
+        assets = ar.get_assets(filter_)
+        for asset_data in assets:
+            if str(asset_data.asset_name) == bp_name:
+                # object_path is like /Game/BP_Foo.BP_Foo - strip the .ClassName suffix
+                obj_path = str(asset_data.object_path)
+                resolved = obj_path.rsplit(".", 1)[0]
+                log_fn("Found blueprint at: {}".format(resolved))
+                bp_class = unreal.EditorAssetLibrary.load_blueprint_class(resolved)
+                if bp_class is not None:
+                    return bp_class, resolved
+    except Exception as e:
+        log_fn("Asset registry search failed: {}".format(e))
+
+    return None, None
+
+
 def run_import(json_file, blueprint_path, scale, log_fn):
     try:
         with open(json_file, encoding="utf-8") as f:
@@ -409,12 +449,13 @@ def run_import(json_file, blueprint_path, scale, log_fn):
     ref_y = polygons[0]["exterior"][0][1]
     log_fn("Reference origin: ({:.8f}, {:.8f})".format(ref_x, ref_y))
 
-    bp_class = unreal.EditorAssetLibrary.load_blueprint_class(blueprint_path)
+    bp_class, resolved_path = _load_blueprint_class(blueprint_path, log_fn)
     if bp_class is None:
-        log_fn("ERROR: Could not load Blueprint '{}'".format(blueprint_path))
-        log_fn("Check the Content Browser path, e.g. /Game/Blueprints/BP_MySpline")
+        log_fn("ERROR: Could not find Blueprint '{}'.".format(blueprint_path))
+        log_fn("Open Content Browser, right-click your BP -> Copy Reference,")
+        log_fn("then paste the path (e.g. /Game/BP_PolygonSpline) into the script.")
         return
-    log_fn("Blueprint loaded: {}".format(blueprint_path))
+    log_fn("Blueprint loaded: {}".format(resolved_path))
 
     georeference = _find_cesium_georeference()
     to_ue = _make_coord_converter(georeference, ref_x, ref_y, scale, is_geographic, log_fn)
@@ -1082,7 +1123,7 @@ class App(tk.Tk):
 
         self.curves_input = tk.StringVar()
         self.curves_output_dir = tk.StringVar()
-        self.curves_bp_path = tk.StringVar(value="/Game/Blueprints/BP_PolygonSpline")
+        self.curves_bp_path = tk.StringVar(value="/Game/BP_PolygonSpline")
         self.curves_scale = tk.StringVar(value="100.0")
         self.curves_refinements = tk.IntVar(value=3)
         self.curves_simplify = tk.StringVar(value="0.0")
